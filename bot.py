@@ -22,17 +22,34 @@ def home():
     return "PAIF Fear & Greed Bot is running!"
 
 def run_flask():
-    app_flask.run(host="0.0.0.0", port=PORT)
+    # Ditambah use_reloader=False supaya Flask tidak crash dalam thread
+    app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False, debug=False)
 
 async def get_fng():
     try:
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/"
-        resp = requests.get(url, timeout=15)
+        
+        # 1. Tambah header User-Agent untuk menyamar sebagai browser sebenar
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        # 2. Hantar request bersama headers tersebut
+        resp = requests.get(url, headers=headers, timeout=15)
+        
+        # 3. Semak jika CNN beri respon positif (200 OK) sebelum parse JSON
+        if resp.status_code != 200:
+             return f"❌ Gagal ambil data. Server memulangkan kod: {resp.status_code}"
+             
         data = resp.json()
         latest = data.get("fear_and_greed_historical", [{}])[-1]
-        score = latest.get("score", "N/A")
+        
+        # Bundarkan skor (kadang-kadang CNN bagi nombor perpuluhan)
+        score = round(latest.get("score", 0))
         rating = latest.get("rating", "N/A")
+        
         return f"🧭 *Fear & Greed*: {score} ({rating})"
+        
     except Exception as e:
         return f"❌ Gagal ambil data.\nError: {str(e)[:80]}"
 
