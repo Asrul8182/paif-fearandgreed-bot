@@ -42,11 +42,18 @@ async def get_fng():
              return f"❌ Gagal ambil data. Server memulangkan kod: {resp.status_code}"
              
         data = resp.json()
-        latest = data.get("fear_and_greed_historical", [{}])[-1]
         
-        # Bundarkan skor (kadang-kadang CNN bagi nombor perpuluhan)
-        score = round(latest.get("score", 0))
-        rating = latest.get("rating", "N/A")
+        # Ambil objek utama 'fear_and_greed' terus dari CNN (struktur baharu)
+        fng_data = data.get("fear_and_greed", {})
+        
+        if not fng_data:
+            return "❌ Gagal: Struktur data dari CNN tidak dijumpai."
+            
+        # Dapatkan markah dan bundarkan ke nombor bulat
+        score = round(fng_data.get("score", 0))
+        
+        # Dapatkan rating dan cantikkan teks (contoh: "neutral" jadi "Neutral")
+        rating = fng_data.get("rating", "N/A").title()
         
         return f"🧭 *Fear & Greed*: {score} ({rating})"
         
