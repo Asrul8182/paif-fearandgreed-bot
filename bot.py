@@ -1,9 +1,8 @@
 import os
 import requests
+import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-import asyncio
-import logging
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -20,16 +19,15 @@ async def get_fng():
         latest = data.get("fear_and_greed_historical", [{}])[-1]
         score = latest.get("score", "N/A")
         rating = latest.get("rating", "N/A")
-        return f"🧭 **Fear & Greed**: {score} ({rating})"
+        return f"🧭 *Fear & Greed*: {score} ({rating})"
     except Exception as e:
-        return f"❌ Gagal ambil Fear & Greed.\nError: {str(e)[:80]}"
+        return f"❌ Gagal ambil data.\nError: {str(e)[:80]}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ *PAIF Fear & Greed Bot Aktif!*\n\n"
-        "Command:\n"
         "/fng - Lihat Fear & Greed Index\n"
-        "/paif - Info ringkas PAIF",
+        "/paif - Info PAIF",
         parse_mode="Markdown"
     )
 
@@ -38,15 +36,14 @@ async def fng_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def paif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
+    await update.message.reply_text(
         "📊 *Public Asia Ittikal Fund (PAIF)*\n\n"
-        "• Fund Shariah-compliant Asia Equity\n"
-        "• Semak NAV terkini di Public Mutual website\n\n"
-        "Gunakan /fng untuk timing sentiment pasaran."
+        "Fund Shariah-compliant Asia Equity.\n"
+        "Gunakan /fng untuk timing sentiment.",
+        parse_mode="Markdown"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def main():
+def main():
     if not TOKEN:
         print("ERROR: TELEGRAM_TOKEN tidak dijumpai!")
         return
@@ -57,7 +54,7 @@ async def main():
     app.add_handler(CommandHandler("paif", paif_cmd))
 
     print("Bot sedang berjalan...")
-    await app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
