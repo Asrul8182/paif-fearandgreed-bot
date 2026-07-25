@@ -1,6 +1,8 @@
 import os
 import requests
 import logging
+import threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -10,6 +12,17 @@ logging.basicConfig(
 )
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+PORT = int(os.environ.get("PORT", 10000))
+
+# Dummy Flask server supaya Render happy
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "PAIF Fear & Greed Bot is running!"
+
+def run_flask():
+    app_flask.run(host="0.0.0.0", port=PORT)
 
 async def get_fng():
     try:
@@ -47,6 +60,9 @@ def main():
     if not TOKEN:
         print("ERROR: TELEGRAM_TOKEN tidak dijumpai!")
         return
+
+    # Jalankan Flask di thread berasingan
+    threading.Thread(target=run_flask, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
