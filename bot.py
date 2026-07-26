@@ -30,38 +30,104 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     logging.warning("⚠️ SUPABASE_URL atau SUPABASE_KEY tidak dijumpai.")
 
-# ==================== Flask (untuk Render) ====================
+# ==================== Flask ====================
 app_flask = Flask(__name__)
 
 @app_flask.route("/")
 def home():
-    return "PAIF Fear & Greed Bot (Pro Technical) is running!"
+    return "PAIF Bot (Institutional Asia Macro Edition) is running!"
 
 def run_flask():
     app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False, debug=False)
 
 # ==================== Helper Functions ====================
-def get_yahoo_change(symbol):
+def get_yahoo_data(symbol):
+    """Fungsi fleksibel untuk ambil nilai dan % perubahan dari Yahoo"""
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2d"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         data = resp.json()
         closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-        if len(closes) >= 2 and closes[-1] and closes[-2]:
-            change = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-            return round(change, 2)
-        return None
+        closes = [c for c in closes if c is not None] # Buang data kosong
+        
+        if len(closes) >= 2:
+            current = closes[-1]
+            prev = closes[-2]
+            change_pct = ((current - prev) / prev) * 100
+            return current, round(change_pct, 2)
+        elif len(closes) == 1:
+            return closes[0], 0.0
     except:
-        return None
+        pass
+    return None, None
+
+def calculate_asia_fng():
+    """Enjin Makro Khas PAIF: Kira skor 0-100 berdasarkan indikator Asia"""
+    score = 50 # Markah asas (Neutral)
+    details = []
+
+    # 1. Asia Volatility (VHSI)
+    vhsi_val, _ = get_yahoo_data("^VHSI")
+    if vhsi_val is not None:
+        details.append(f"• VIX Asia (VHSI): {vhsi_val:.2f}")
+        if vhsi_val >= 25: score -= 25      # Extreme Fear
+        elif vhsi_val >= 20: score -= 15    # Fear
+        elif vhsi_val <= 14: score += 20    # Extreme Greed
+        elif vhsi_val <= 18: score += 10    # Greed
+    else:
+        details.append("• VIX Asia (VHSI): N/A")
+
+    # 2. Yen as Safe Haven (USD/JPY)
+    jpy_val, jpy_pct = get_yahoo_data("JPY=X")
+    if jpy_pct is not None:
+        details.append(f"• USD/JPY: {jpy_val:.2f} ({jpy_pct:+.2f}%)")
+        if jpy_pct <= -0.5: score -= 15     # Yen menguat = Pelabur panik
+        elif jpy_pct <= -0.2: score -= 5
+        elif jpy_pct >= 0.5: score += 15    # Yen melemah = Pelabur berani
+        elif jpy_pct >= 0.2: score += 5
+    else:
+        details.append("• USD/JPY: N/A")
+
+    # 3. China Capital Flow (USD/CNY)
+    cny_val, cny_pct = get_yahoo_data("CNY=X")
+    if cny_pct is not None:
+        details.append(f"• USD/CNY: {cny_val:.4f} ({cny_pct:+.2f}%)")
+        if cny_pct >= 0.3: score -= 15      # Yuan melemah = Modal keluar
+        elif cny_pct >= 0.1: score -= 5
+        elif cny_pct <= -0.3: score += 15   # Yuan menguat = Modal masuk
+        elif cny_pct <= -0.1: score += 5
+    else:
+        details.append("• USD/CNY: N/A")
+        
+    # 4. Asian Equities Trend (Hang Seng & KLCI)
+    _, hsi_pct = get_yahoo_data("^HSI")
+    _, klci_pct = get_yahoo_data("^KLSE")
+    
+    if hsi_pct is not None:
+        details.append(f"• Hang Seng: {hsi_pct:+.2f}%")
+        if hsi_pct <= -1.5: score -= 10
+        elif hsi_pct >= 1.5: score += 10
+    
+    if klci_pct is not None:
+        details.append(f"• KLCI: {klci_pct:+.2f}%")
+        
+    # Tetapkan had markah 0 hingga 100
+    score = max(0, min(100, score))
+    
+    # Penentuan Label
+    if score <= 25: rating = "Extreme Fear"
+    elif score <= 45: rating = "Fear"
+    elif score <= 55: rating = "Neutral"
+    elif score <= 75: rating = "Greed"
+    else: rating = "Extreme Greed"
+    
+    return score, rating, "\n".join(details)
 
 def calculate_rsi(prices):
     if len(prices) < 2: 
         return 50.0
-    
-    gains = []
-    losses = []
-    
+    gains, losses = [], []
     for i in range(1, len(prices)):
         change = prices[i] - prices[i-1]
         if change > 0:
@@ -73,67 +139,48 @@ def calculate_rsi(prices):
             
     avg_gain = sum(gains) / len(gains)
     avg_loss = sum(losses) / len(losses)
-    
-    if avg_loss == 0:
-        return 100.0
-        
+    if avg_loss == 0: return 100.0
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(rsi, 1)
+    return round(100 - (100 / (1 + rs)), 1)
 
-# Ambil NAV & Kira Enjin Teknikal Penuh
 def get_paif_nav_from_db():
     if supabase:
         try:
-            # Ambil sejarah lengkap (untuk mendapatkan ATH, ATL, dan trend)
             res = supabase.table("paif_nav").select("*").order("id", desc=True).execute()
-            
             if res.data:
                 records = res.data
                 all_navs = [float(r.get("nav")) for r in records if r.get("nav") is not None]
-                
-                if not all_navs:
-                    return None
+                if not all_navs: return None
                     
                 latest_nav = all_navs[0]
                 tarikh = records[0].get("tarikh")
                 masa = records[0].get("masa")
                 nota = records[0].get("nota")
                 
-                # 1. ATH, ATL & Zon Struktur Pasaran (Premium/Discount)
+                # ATH, ATL & Zon Struktur
                 ath = max(all_navs)
                 atl = min(all_navs)
                 midpoint = atl + ((ath - atl) / 2)
+                zone_str = "🟢 DISCOUNT (Bawah 50%)" if latest_nav < midpoint else "🔴 PREMIUM (Atas 50%)"
                 
-                if latest_nav < midpoint:
-                    zone_str = "🟢 DISCOUNT (Bawah 50%)"
-                else:
-                    zone_str = "🔴 PREMIUM (Atas 50%)"
-                
-                # 2. RSI 14-Hari (Ambil 15 harga terakhir, susun lama ke baharu)
+                # RSI 14-Hari
                 prices_for_rsi = all_navs[:15][::-1] if len(all_navs) >= 15 else all_navs[::-1]
                 rsi_val = calculate_rsi(prices_for_rsi)
                 
-                if rsi_val <= 30:
-                    rsi_status = "Oversold"
-                elif rsi_val >= 70:
-                    rsi_status = "Overbought"
-                else:
-                    rsi_status = "Neutral"
+                if rsi_val <= 30: rsi_status = "Oversold"
+                elif rsi_val >= 70: rsi_status = "Overbought"
+                else: rsi_status = "Neutral"
                     
-                # 3. Perubahan Sejarah (1W = 5 hari bekerja, 1M = 22 hari bekerja)
+                # Perubahan Sejarah
                 chg_1w = ((latest_nav - all_navs[5]) / all_navs[5]) * 100 if len(all_navs) > 5 else 0
                 chg_1m = ((latest_nav - all_navs[21]) / all_navs[21]) * 100 if len(all_navs) > 21 else 0
                 
-                # Cantumkan info masa
                 info_str = f"{tarikh} {masa}"
-                if nota:
-                    info_str += f" ({nota})"
+                if nota: info_str += f" ({nota})"
                     
                 return latest_nav, info_str, rsi_val, rsi_status, zone_str, ath, chg_1w, chg_1m
-                
         except Exception as e:
-            logging.error(f"Error baca NAV dari DB: {e}")
+            logging.error(f"Error baca NAV: {e}")
     return None
 
 def get_paif_nav_web():
@@ -150,30 +197,13 @@ def get_paif_nav_web():
         pass
     return None, None
 
-# ==================== Main F&G Function ====================
+# ==================== Main Function ====================
 async def get_fng():
     try:
-        # 1. CNN Fear & Greed (Bakal digantikan dengan Indeks Asia kelak)
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=15)
+        # 1. Enjin Sentimen Makro Asia
+        macro_score, macro_rating, macro_details = calculate_asia_fng()
 
-        if resp.status_code == 200:
-            data = resp.json()
-            fng_data = data.get("fear_and_greed", {})
-            if not fng_data: fng_data = data.get("fear_and_greed_historical", [{}])[-1]
-            score = round(fng_data.get("score", 0))
-            rating = fng_data.get("rating", "N/A").title()
-        else:
-            score, rating = 50, "Sistem Dalam Penyelenggaraan"
-
-        # 2. Asia Indices Snapshot
-        hsi = get_yahoo_change("^HSI")
-        klci = get_yahoo_change("^KLSE")
-        hsi_text = f"{hsi:+.2f}%" if hsi is not None else "N/A"
-        klci_text = f"{klci:+.2f}%" if klci is not None else "N/A"
-
-        # 3. Pengiraan Teknikal Pro
+        # 2. Pengiraan Teknikal PAIF
         db_result = get_paif_nav_from_db()
         
         if db_result:
@@ -193,21 +223,19 @@ async def get_fng():
             paif_text = f"• PAIF NAV: RM {nav_web}" if nav_web else "• PAIF NAV: Tidak tersedia"
             rsi_val, nav_db, zone_str = 50, None, ""
 
-        # 4. Enjin Cadangan 
-        if score <= 30 and "DISCOUNT" in zone_str and rsi_val <= 40:
-            advice = "🔥 **PERFECT BUY / STRONG DCA**\nFear ekstrem, harga di zon Discount & Momentum mula Oversold. Peluang keemasan."
-        elif score <= 45 and "DISCOUNT" in zone_str:
-            advice = "🛒 **BUY (Accumulate)**\nHarga sangat cantik di zon diskaun. Boleh mula kumpul lot."
-        elif "PREMIUM" in zone_str and rsi_val >= 70:
-            advice = "⚠️ **CAUTION / TAKE PROFIT**\nHarga di zon Premium dan Momentum terlalu panas (Overbought). Tunggu harga reda."
+        # 3. Logik Keputusan Hibrid (Makro + Mikro)
+        if macro_score <= 30 and "DISCOUNT" in zone_str and rsi_val <= 40:
+            advice = "🔥 **PERFECT BUY / STRONG DCA**\nMakro Asia sedang ketakutan ekstrem, struktur harga diskaun & oversold. Optimum untuk kumpul aset."
+        elif macro_score <= 45 and "DISCOUNT" in zone_str:
+            advice = "🛒 **BUY (Accumulate)**\nSentimen Makro berpihak kepada Fear dan harga berada di zon diskaun. Boleh DCA berperingkat."
+        elif macro_score >= 75 and "PREMIUM" in zone_str and rsi_val >= 70:
+            advice = "⚠️ **CAUTION / TAKE PROFIT**\nPasaran Asia tamak (Greed) dan harga PAIF sedang overbought. Jangan kejar harga."
         else:
-            advice = "⚖️ **NEUTRAL / HOLD**\nPasaran sedang mencari arah (sideway). Teruskan memantau pergerakan harga dan sentimen."
+            advice = "⚖️ **NEUTRAL / HOLD**\nTiada sentimen ekstrem dikesan. Teruskan memantau pergerakan wang serantau."
 
         msg = (
-            f"🧭 *Fear & Greed (Global)*: {score} ({rating})\n\n"
-            f"*Asia Market Snapshot:*\n"
-            f"• Hang Seng : {hsi_text}\n"
-            f"• KLCI      : {klci_text}\n\n"
+            f"🧭 *Asia Sentiment (PAIF Radar)*: {macro_score} ({macro_rating})\n\n"
+            f"*Indikator Pasaran (Proksi):*\n{macro_details}\n\n"
             f"*Data Teknikal PAIF:*\n{paif_text}\n\n"
             f"*Cadangan Sistem:*\n{advice}"
         )
@@ -218,89 +246,56 @@ async def get_fng():
 
 # ==================== Telegram Commands ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if supabase:
-        try:
-            user_data = {
-                "telegram_id": user.id,
-                "first_name": user.first_name or "",
-                "username": user.username or ""
-            }
-            supabase.table("users").upsert(user_data).execute()
-        except Exception:
-            pass
-
     await update.message.reply_text(
-        "✅ *PAIF Pro Bot Aktif!*\n\n"
-        "/fng  - Analisis Teknikal (RSI, Zon Pasaran, Prestasi)\n"
-        "/setnav [harga] [nota opsional] - Update NAV manual\n"
-        "/paif - Info ringkas PAIF",
-        parse_mode="Markdown"
+        "✅ *PAIF Institutional Bot Aktif!*\n\n"
+        "/fng  - Radar F&G Asia (VIX/FX) & Teknikal\n"
+        "/setnav [harga] [nota] - Update NAV manual\n"
+        "/paif - Info Dana", parse_mode="Markdown"
     )
 
 async def setnav_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text(
-            "❌ Sila masukkan harga NAV.\n*Contoh:* `/setnav 0.8123`", 
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ Masukkan harga. *Contoh:* `/setnav 0.8123`", parse_mode="Markdown")
         return
-
     try:
         new_nav = float(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ Sila pastikan NAV adalah dalam format nombor/perpuluhan.")
+        await update.message.reply_text("❌ Format nombor salah.")
         return
         
-    nota_str = " ".join(context.args[1:]) if len(context.args) > 1 else ""
-    
+    nota_str = " ".join(context.args[1:])
     my_time = datetime.utcnow() + timedelta(hours=8)
-    tarikh_str = my_time.strftime("%d-%m-%Y")
-    masa_str = my_time.strftime("%I:%M %p")
-
+    
     if supabase:
         try:
-            data = {
-                "tarikh": tarikh_str,
-                "masa": masa_str,
+            supabase.table("paif_nav").insert({
+                "tarikh": my_time.strftime("%d-%m-%Y"),
+                "masa": my_time.strftime("%I:%M %p"),
                 "nav": new_nav,
                 "nota": nota_str
-            }
-            supabase.table("paif_nav").insert(data).execute()
-            
+            }).execute()
             await update.message.reply_text(f"✅ NAV RM {new_nav:.4f} berjaya disimpan!", parse_mode="Markdown")
         except Exception as e:
-            await update.message.reply_text(f"❌ Gagal simpan ke database: {e}")
+            await update.message.reply_text(f"❌ Gagal: {e}")
     else:
-        await update.message.reply_text("❌ Database belum disambungkan.")
+        await update.message.reply_text("❌ Database error.")
 
 async def fng_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await get_fng()
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def paif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📊 *Public Asia Ittikal Fund (PAIF)*\n\n"
-        "• Enjin Teknikal: RSI 14-Hari, Premium/Discount Zones, ATH Drawdown.\n"
-        "• Data memori pasaran memuatkan lebih 600 rekod dagangan.",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("📊 *PAIF Radar*\nEnjin Makro: VIX Asia (VHSI), JPY, CNY, HSI.\nEnjin Mikro: RSI, Drawdown & Zon Struktur.", parse_mode="Markdown")
 
-# ==================== Main ====================
 def main():
-    if not TOKEN:
-        print("ERROR: TELEGRAM_TOKEN tidak dijumpai!")
-        return
-
+    if not TOKEN: return
     threading.Thread(target=run_flask, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("fng", fng_cmd))
     app.add_handler(CommandHandler("paif", paif_cmd))
     app.add_handler(CommandHandler("setnav", setnav_cmd))
-
-    print("Bot sedang berjalan...")
+    print("Bot berjalan...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
