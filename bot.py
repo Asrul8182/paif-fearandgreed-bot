@@ -35,7 +35,7 @@ app_flask = Flask(__name__)
 
 @app_flask.route("/")
 def home():
-    return "PAIF Fear & Greed Bot (Hybrid ATH) is running!"
+    return "PAIF Fear & Greed Bot (Pro Technical) is running!"
 
 def run_flask():
     app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False, debug=False)
@@ -55,150 +55,156 @@ def get_yahoo_change(symbol):
     except:
         return None
 
-# Ambil NAV dari Supabase + Kiraan Analisis Teknikal (MA, Support & All-Time High)
+def calculate_rsi(prices):
+    if len(prices) < 2: 
+        return 50.0
+    
+    gains = []
+    losses = []
+    
+    for i in range(1, len(prices)):
+        change = prices[i] - prices[i-1]
+        if change > 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
+            
+    avg_gain = sum(gains) / len(gains)
+    avg_loss = sum(losses) / len(losses)
+    
+    if avg_loss == 0:
+        return 100.0
+        
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return round(rsi, 1)
+
+# Ambil NAV & Kira Enjin Teknikal Penuh
 def get_paif_nav_from_db():
     if supabase:
         try:
-            # 1. Ambil 30 rekod terbaharu untuk pengiraan Moving Average & Support Semasa
-            res = supabase.table("paif_nav").select("*").order("id", desc=True).limit(30).execute()
-            
-            # 2. Carian khas: Ambil Harga Tertinggi dalam sejarah (All-Time High)
-            res_ath = supabase.table("paif_nav").select("nav").order("nav", desc=True).limit(1).execute()
-            
-            ath = None
-            if res_ath.data:
-                ath = float(res_ath.data[0].get("nav"))
+            # Ambil sejarah lengkap (untuk mendapatkan ATH, ATL, dan trend)
+            res = supabase.table("paif_nav").select("*").order("id", desc=True).execute()
             
             if res.data:
                 records = res.data
-                latest_nav = float(records[0].get("nav"))
+                all_navs = [float(r.get("nav")) for r in records if r.get("nav") is not None]
+                
+                if not all_navs:
+                    return None
+                    
+                latest_nav = all_navs[0]
                 tarikh = records[0].get("tarikh")
                 masa = records[0].get("masa")
                 nota = records[0].get("nota")
                 
-                # Ekstrak semua harga 30 hari untuk pengiraan teknikal
-                navs = [float(r.get("nav")) for r in records if r.get("nav") is not None]
+                # 1. ATH, ATL & Zon Struktur Pasaran (Premium/Discount)
+                ath = max(all_navs)
+                atl = min(all_navs)
+                midpoint = atl + ((ath - atl) / 2)
                 
-                # Kira Moving Average & Support 30-Hari
-                ma_14 = sum(navs[:14]) / len(navs[:14]) if len(navs) >= 14 else sum(navs) / len(navs)
-                ma_30 = sum(navs) / len(navs)
-                support_30 = min(navs)
+                if latest_nav < midpoint:
+                    zone_str = "🟢 DISCOUNT (Bawah 50%)"
+                else:
+                    zone_str = "🔴 PREMIUM (Atas 50%)"
                 
-                # Cantumkan info untuk dipaparkan
+                # 2. RSI 14-Hari (Ambil 15 harga terakhir, susun lama ke baharu)
+                prices_for_rsi = all_navs[:15][::-1] if len(all_navs) >= 15 else all_navs[::-1]
+                rsi_val = calculate_rsi(prices_for_rsi)
+                
+                if rsi_val <= 30:
+                    rsi_status = "Oversold"
+                elif rsi_val >= 70:
+                    rsi_status = "Overbought"
+                else:
+                    rsi_status = "Neutral"
+                    
+                # 3. Perubahan Sejarah (1W = 5 hari bekerja, 1M = 22 hari bekerja)
+                chg_1w = ((latest_nav - all_navs[5]) / all_navs[5]) * 100 if len(all_navs) > 5 else 0
+                chg_1m = ((latest_nav - all_navs[21]) / all_navs[21]) * 100 if len(all_navs) > 21 else 0
+                
+                # Cantumkan info masa
                 info_str = f"{tarikh} {masa}"
                 if nota:
-                    info_str += f"\n  (Nota: {nota})"
+                    info_str += f" ({nota})"
                     
-                return latest_nav, info_str, ma_14, ma_30, support_30, ath
+                return latest_nav, info_str, rsi_val, rsi_status, zone_str, ath, chg_1w, chg_1m
+                
         except Exception as e:
             logging.error(f"Error baca NAV dari DB: {e}")
-    return None, None, None, None, None, None
+    return None
 
 def get_paif_nav_web():
     try:
         url = "https://www.investing.com/funds/public-asia-ittikal-fund"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=15)
-        
-        if resp.status_code != 200:
-            return None, None, None
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        price_tag = soup.select_one('[data-test="instrument-price-last"]')
-        change_tag = soup.select_one('[data-test="instrument-price-change"]')
-        percent_tag = soup.select_one('[data-test="instrument-price-change-percent"]')
-        
-        nav = price_tag.get_text(strip=True) if price_tag else None
-        change = change_tag.get_text(strip=True) if change_tag else ""
-        percent = percent_tag.get_text(strip=True) if percent_tag else ""
-        
-        if nav:
-            return "Investing.com", nav, f"{change} {percent}".strip()
-        return None, None, None
-    except Exception:
-        return None, None, None
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            price_tag = soup.select_one('[data-test="instrument-price-last"]')
+            if price_tag:
+                return "Investing.com", price_tag.get_text(strip=True)
+    except:
+        pass
+    return None, None
 
 # ==================== Main F&G Function ====================
 async def get_fng():
     try:
-        # 1. CNN Fear & Greed
+        # 1. CNN Fear & Greed (Bakal digantikan dengan Indeks Asia kelak)
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=15)
 
-        if resp.status_code != 200:
-            return f"❌ Gagal ambil F&G (kod {resp.status_code})"
+        if resp.status_code == 200:
+            data = resp.json()
+            fng_data = data.get("fear_and_greed", {})
+            if not fng_data: fng_data = data.get("fear_and_greed_historical", [{}])[-1]
+            score = round(fng_data.get("score", 0))
+            rating = fng_data.get("rating", "N/A").title()
+        else:
+            score, rating = 50, "Sistem Dalam Penyelenggaraan"
 
-        data = resp.json()
-        fng_data = data.get("fear_and_greed") or {}
-        if not fng_data:
-            historical = data.get("fear_and_greed_historical", [])
-            if historical: fng_data = historical[-1]
-
-        score = round(fng_data.get("score", 0))
-        rating = fng_data.get("rating", "N/A").title()
-
-        # 2. Asia Indices
+        # 2. Asia Indices Snapshot
         hsi = get_yahoo_change("^HSI")
         klci = get_yahoo_change("^KLSE")
-
         hsi_text = f"{hsi:+.2f}%" if hsi is not None else "N/A"
         klci_text = f"{klci:+.2f}%" if klci is not None else "N/A"
 
-        # 3. PAIF NAV (Sistem Analisis Teknikal ATH)
-        nav_db, info_db, ma_14, ma_30, support_30, ath = get_paif_nav_from_db()
+        # 3. Pengiraan Teknikal Pro
+        db_result = get_paif_nav_from_db()
         
-        if nav_db is not None:
-            # Kira Drawdown (Peratusan kejatuhan dari harga All-Time High)
+        if db_result:
+            nav_db, info_db, rsi_val, rsi_status, zone_str, ath, chg_1w, chg_1m = db_result
             drawdown = ((nav_db - ath) / ath) * 100 if ath else 0
             
             paif_text = (
                 f"• Semasa     : *RM {nav_db:.4f}*\n"
-                f"• MA 14-Hari : RM {ma_14:.4f}\n"
-                f"• MA 30-Hari : RM {ma_30:.4f}\n"
-                f"• Support 30D: RM {support_30:.4f}\n"
-                f"• ATH (High) : RM {ath:.4f}\n"
-                f"• Drawdown   : {drawdown:+.2f}%\n"
-                f"  (Kemas kini: {info_db})"
+                f"• Momentum   : {rsi_val} (RSI - {rsi_status})\n"
+                f"• Zon Pasaran: {zone_str}\n"
+                f"• Perubahan  : {chg_1w:+.2f}% (1W) / {chg_1m:+.2f}% (1M)\n"
+                f"• ATH (High) : RM {ath:.4f} ({drawdown:+.2f}%)\n"
+                f"  🗓 *{info_db}*"
             )
         else:
-            date_web, nav_web, change_web = get_paif_nav_web()
-            if nav_web:
-                paif_text = f"• PAIF NAV   : RM {nav_web}  {change_web}\n  (Sumber Auto: {date_web})"
-            else:
-                paif_text = "• PAIF NAV   : Tidak tersedia buat masa ini"
+            _, nav_web = get_paif_nav_web()
+            paif_text = f"• PAIF NAV: RM {nav_web}" if nav_web else "• PAIF NAV: Tidak tersedia"
+            rsi_val, nav_db, zone_str = 50, None, ""
 
-        # 4. Enjin Logik Cadangan Hibrid (F&G + Teknikal)
-        if score <= 25:
-            if nav_db and nav_db <= ma_30:
-                advice = "🔥 **STRONG BUY**\nExtreme Fear + Harga di bawah MA30. Peluang kumpul aset (DCA) yang sangat baik di zon murah."
-            else:
-                advice = "Extreme Fear → Sentimen amat takut. Pertimbang beli berperingkat."
-                
-        elif score <= 45:
-            if nav_db and nav_db <= (support_30 * 1.01): # Harga berhampiran zon support
-                advice = "🛒 **BUY (Support Test)**\nSentimen Fear dan harga kini sedang menguji paras sokongan 30-hari!"
-            elif nav_db and nav_db <= ma_14:
-                advice = "🛒 **BUY**\nSentimen Fear + Harga di bawah MA14. Momen sesuai untuk mula kumpul."
-            else:
-                advice = "Fear → Sentimen sedang menurun, pantau pergerakan harga."
-                
-        elif score <= 55:
-            advice = "Neutral → Hold / pantau pasaran. Tiada arah yang jelas."
-            
-        elif score <= 75:
-            if nav_db and nav_db >= ma_30:
-                advice = "⚠️ **BERJAGA-JAGA**\nGreed + Harga di atas purata 30-hari (Premium). Jangan kejar harga (FOMO)."
-            else:
-                advice = "Greed → Pasaran mula tamak. Lebih berhati-hati."
-                
+        # 4. Enjin Cadangan 
+        if score <= 30 and "DISCOUNT" in zone_str and rsi_val <= 40:
+            advice = "🔥 **PERFECT BUY / STRONG DCA**\nFear ekstrem, harga di zon Discount & Momentum mula Oversold. Peluang keemasan."
+        elif score <= 45 and "DISCOUNT" in zone_str:
+            advice = "🛒 **BUY (Accumulate)**\nHarga sangat cantik di zon diskaun. Boleh mula kumpul lot."
+        elif "PREMIUM" in zone_str and rsi_val >= 70:
+            advice = "⚠️ **CAUTION / TAKE PROFIT**\nHarga di zon Premium dan Momentum terlalu panas (Overbought). Tunggu harga reda."
         else:
-            advice = "🛑 **STRONG SELL / TAKE PROFIT**\nExtreme Greed! Pasaran terlalu panas, pertimbang untuk switch dana atau kurangkan pendedahan."
+            advice = "⚖️ **NEUTRAL / HOLD**\nPasaran sedang mencari arah (sideway). Teruskan memantau pergerakan harga dan sentimen."
 
         msg = (
-            f"🧭 *Fear & Greed*: {score} ({rating})\n\n"
+            f"🧭 *Fear & Greed (Global)*: {score} ({rating})\n\n"
             f"*Asia Market Snapshot:*\n"
             f"• Hang Seng : {hsi_text}\n"
             f"• KLCI      : {klci_text}\n\n"
@@ -225,8 +231,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     await update.message.reply_text(
-        "✅ *PAIF Hybrid Bot Aktif!*\n\n"
-        "/fng  - Analisis Hibrid F&G + Sentimen MA\n"
+        "✅ *PAIF Pro Bot Aktif!*\n\n"
+        "/fng  - Analisis Teknikal (RSI, Zon Pasaran, Prestasi)\n"
         "/setnav [harga] [nota opsional] - Update NAV manual\n"
         "/paif - Info ringkas PAIF",
         parse_mode="Markdown"
@@ -262,15 +268,7 @@ async def setnav_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             supabase.table("paif_nav").insert(data).execute()
             
-            reply_msg = (
-                f"✅ *NAV Berjaya Disimpan!*\n\n"
-                f"• Harga: RM {new_nav:.4f}\n"
-                f"• Tarikh: {tarikh_str} ({masa_str})"
-            )
-            if nota_str:
-                reply_msg += f"\n• Nota: {nota_str}"
-                
-            await update.message.reply_text(reply_msg, parse_mode="Markdown")
+            await update.message.reply_text(f"✅ NAV RM {new_nav:.4f} berjaya disimpan!", parse_mode="Markdown")
         except Exception as e:
             await update.message.reply_text(f"❌ Gagal simpan ke database: {e}")
     else:
@@ -283,8 +281,8 @@ async def fng_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def paif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📊 *Public Asia Ittikal Fund (PAIF)*\n\n"
-        "• Fund Shariah-compliant Asia Equity\n"
-        "• Bot ini menggunakan analisis purata (MA) untuk mengukur struktur harga.",
+        "• Enjin Teknikal: RSI 14-Hari, Premium/Discount Zones, ATH Drawdown.\n"
+        "• Data memori pasaran memuatkan lebih 600 rekod dagangan.",
         parse_mode="Markdown"
     )
 
