@@ -35,7 +35,7 @@ app_flask = Flask(__name__)
 
 @app_flask.route("/")
 def home():
-    return "PAIF Fear & Greed Bot (Hybrid MA) is running!"
+    return "PAIF Fear & Greed Bot (Hybrid ATH) is running!"
 
 def run_flask():
     app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False, debug=False)
@@ -55,12 +55,19 @@ def get_yahoo_change(symbol):
     except:
         return None
 
-# Ambil NAV dari Supabase + Kiraan Analisis Teknikal (MA, Support & High)
+# Ambil NAV dari Supabase + Kiraan Analisis Teknikal (MA, Support & All-Time High)
 def get_paif_nav_from_db():
     if supabase:
         try:
-            # Ambil 30 rekod paling terbaharu berdasarkan susunan ID
+            # 1. Ambil 30 rekod terbaharu untuk pengiraan Moving Average & Support Semasa
             res = supabase.table("paif_nav").select("*").order("id", desc=True).limit(30).execute()
+            
+            # 2. Carian khas: Ambil Harga Tertinggi dalam sejarah (All-Time High)
+            res_ath = supabase.table("paif_nav").select("nav").order("nav", desc=True).limit(1).execute()
+            
+            ath = None
+            if res_ath.data:
+                ath = float(res_ath.data[0].get("nav"))
             
             if res.data:
                 records = res.data
@@ -69,21 +76,20 @@ def get_paif_nav_from_db():
                 masa = records[0].get("masa")
                 nota = records[0].get("nota")
                 
-                # Ekstrak semua harga untuk pengiraan teknikal
+                # Ekstrak semua harga 30 hari untuk pengiraan teknikal
                 navs = [float(r.get("nav")) for r in records if r.get("nav") is not None]
                 
-                # Kira Moving Average, Support & High
+                # Kira Moving Average & Support 30-Hari
                 ma_14 = sum(navs[:14]) / len(navs[:14]) if len(navs) >= 14 else sum(navs) / len(navs)
                 ma_30 = sum(navs) / len(navs)
                 support_30 = min(navs)
-                high_30 = max(navs)
                 
                 # Cantumkan info untuk dipaparkan
                 info_str = f"{tarikh} {masa}"
                 if nota:
                     info_str += f"\n  (Nota: {nota})"
                     
-                return latest_nav, info_str, ma_14, ma_30, support_30, high_30
+                return latest_nav, info_str, ma_14, ma_30, support_30, ath
         except Exception as e:
             logging.error(f"Error baca NAV dari DB: {e}")
     return None, None, None, None, None, None
@@ -141,19 +147,19 @@ async def get_fng():
         hsi_text = f"{hsi:+.2f}%" if hsi is not None else "N/A"
         klci_text = f"{klci:+.2f}%" if klci is not None else "N/A"
 
-        # 3. PAIF NAV (Sistem Analisis Teknikal)
-        nav_db, info_db, ma_14, ma_30, support_30, high_30 = get_paif_nav_from_db()
+        # 3. PAIF NAV (Sistem Analisis Teknikal ATH)
+        nav_db, info_db, ma_14, ma_30, support_30, ath = get_paif_nav_from_db()
         
         if nav_db is not None:
-            # Kira Drawdown (Peratusan kejatuhan dari harga puncak)
-            drawdown = ((nav_db - high_30) / high_30) * 100 if high_30 else 0
+            # Kira Drawdown (Peratusan kejatuhan dari harga All-Time High)
+            drawdown = ((nav_db - ath) / ath) * 100 if ath else 0
             
             paif_text = (
                 f"• Semasa     : *RM {nav_db:.4f}*\n"
                 f"• MA 14-Hari : RM {ma_14:.4f}\n"
                 f"• MA 30-Hari : RM {ma_30:.4f}\n"
                 f"• Support 30D: RM {support_30:.4f}\n"
-                f"• High 30D   : RM {high_30:.4f}\n"
+                f"• ATH (High) : RM {ath:.4f}\n"
                 f"• Drawdown   : {drawdown:+.2f}%\n"
                 f"  (Kemas kini: {info_db})"
             )
