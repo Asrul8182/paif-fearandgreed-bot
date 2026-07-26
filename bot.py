@@ -29,36 +29,39 @@ async def get_fng():
     try:
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/"
         
-        # 1. Tambah header User-Agent untuk menyamar sebagai browser sebenar
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
         }
         
-        # 2. Hantar request bersama headers tersebut
         resp = requests.get(url, headers=headers, timeout=15)
         
-        # 3. Semak jika CNN beri respon positif (200 OK) sebelum parse JSON
         if resp.status_code != 200:
-             return f"❌ Gagal ambil data. Server memulangkan kod: {resp.status_code}"
-             
+            return f"❌ Server CNN balas kod: {resp.status_code}"
+            
         data = resp.json()
         
-        # Ambil objek utama 'fear_and_greed' terus dari CNN (struktur baharu)
-        fng_data = data.get("fear_and_greed", {})
+        # Cuba beberapa kemungkinan struktur data CNN
+        fng_data = data.get("fear_and_greed") or data.get("fearAndGreed")
         
-        if not fng_data:
-            return "❌ Gagal: Struktur data dari CNN tidak dijumpai."
-            
-        # Dapatkan markah dan bundarkan ke nombor bulat
-        score = round(fng_data.get("score", 0))
+        if fng_data:
+            score = round(fng_data.get("score", 0))
+            rating = fng_data.get("rating", "N/A").title()
+            return f"🧭 *Fear & Greed*: {score} ({rating})"
         
-        # Dapatkan rating dan cantikkan teks (contoh: "neutral" jadi "Neutral")
-        rating = fng_data.get("rating", "N/A").title()
+        # Fallback: ambil dari historical (cara lama)
+        historical = data.get("fear_and_greed_historical") or data.get("fearAndGreedHistorical")
+        if historical and len(historical) > 0:
+            latest = historical[-1]
+            score = round(latest.get("score", 0))
+            rating = latest.get("rating", "N/A").title()
+            return f"🧭 *Fear & Greed*: {score} ({rating})"
         
-        return f"🧭 *Fear & Greed*: {score} ({rating})"
+        # Jika masih gagal, tunjuk sebahagian data untuk debug
+        return f"❌ Struktur data tidak dikenali.\nKeys: {list(data.keys())[:5]}"
         
     except Exception as e:
-        return f"❌ Gagal ambil data.\nError: {str(e)[:80]}"
+        return f"❌ Gagal ambil data.\nError: {str(e)[:120]}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
