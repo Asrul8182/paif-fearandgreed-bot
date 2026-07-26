@@ -42,30 +42,34 @@ def get_yahoo_change(symbol):
 
 def get_paif_nav():
     try:
-        url = "https://www.publicmutual.com.my/Fund-Price-UT"
+        # Guna Investing.com (lebih stabil)
+        url = "https://www.investing.com/funds/public-asia-ittikal-fund"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         resp = requests.get(url, headers=headers, timeout=15)
+        
         if resp.status_code != 200:
             return None, None, None
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        rows = soup.find_all("tr")
-
-        for row in rows:
-            text = row.get_text().upper()
-            if "PUBLIC ASIA ITTIKAL FUND" in text or ">PAIF<" in text or " PAIF " in text:
-                cols = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
-                if len(cols) >= 5:
-                    date = cols[0]
-                    nav = cols[4] if len(cols) > 4 else cols[-3]
-                    change = cols[5] if len(cols) > 5 else ""
-                    percent = cols[6] if len(cols) > 6 else ""
-                    return date, nav, f"{change} ({percent})" if percent else change
+        
+        # Cari harga terakhir
+        price_tag = soup.select_one('[data-test="instrument-price-last"]')
+        change_tag = soup.select_one('[data-test="instrument-price-change"]')
+        percent_tag = soup.select_one('[data-test="instrument-price-change-percent"]')
+        
+        nav = price_tag.get_text(strip=True) if price_tag else None
+        change = change_tag.get_text(strip=True) if change_tag else ""
+        percent = percent_tag.get_text(strip=True) if percent_tag else ""
+        
+        if nav:
+            return "Investing.com", nav, f"{change} {percent}".strip()
+        
         return None, None, None
+        
     except Exception as e:
-        print(f"PAIF scrape error: {e}")
+        print(f"PAIF Investing.com error: {e}")
         return None, None, None
 
 # ==================== Main F&G Function ====================
