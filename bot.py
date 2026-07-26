@@ -7,6 +7,9 @@ from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Import Supabase
+from supabase import create_client, Client
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -14,6 +17,17 @@ logging.basicConfig(
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get("PORT", 10000))
+
+# ==================== Supabase Setup ====================
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logging.info("✅ Berjaya berhubung dengan Supabase!")
+else:
+    logging.warning("⚠️ SUPABASE_URL atau SUPABASE_KEY tidak dijumpai di Environment Variables.")
 
 # ==================== Flask (untuk Render) ====================
 app_flask = Flask(__name__)
@@ -42,7 +56,6 @@ def get_yahoo_change(symbol):
 
 def get_paif_nav():
     try:
-        # Guna Investing.com (lebih stabil)
         url = "https://www.investing.com/funds/public-asia-ittikal-fund"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -54,7 +67,6 @@ def get_paif_nav():
 
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # Cari harga terakhir
         price_tag = soup.select_one('[data-test="instrument-price-last"]')
         change_tag = soup.select_one('[data-test="instrument-price-change"]')
         percent_tag = soup.select_one('[data-test="instrument-price-change-percent"]')
@@ -135,6 +147,21 @@ async def get_fng():
 
 # ==================== Telegram Commands ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    # Rekod pengguna ke pangkalan data Supabase
+    if supabase:
+        try:
+            user_data = {
+                "telegram_id": user.id,
+                "first_name": user.first_name or "",
+                "username": user.username or ""
+            }
+            # upsert bermaksud: jika ID sudah ada, update. Jika belum, tambah rekod baharu.
+            supabase.table("users").upsert(user_data).execute()
+        except Exception as e:
+            logging.error(f"Gagal simpan data user ke Supabase: {e}")
+
     await update.message.reply_text(
         "✅ *PAIF Fear & Greed Bot Aktif!*\n\n"
         "/fng  - Fear & Greed + Asia + PAIF NAV\n"
