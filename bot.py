@@ -55,7 +55,7 @@ def get_yahoo_change(symbol):
     except:
         return None
 
-# Ambil NAV dari Supabase + Kiraan Analisis Teknikal (MA & Support)
+# Ambil NAV dari Supabase + Kiraan Analisis Teknikal (MA, Support & High)
 def get_paif_nav_from_db():
     if supabase:
         try:
@@ -72,20 +72,21 @@ def get_paif_nav_from_db():
                 # Ekstrak semua harga untuk pengiraan teknikal
                 navs = [float(r.get("nav")) for r in records if r.get("nav") is not None]
                 
-                # Kira Moving Average & Support
+                # Kira Moving Average, Support & High
                 ma_14 = sum(navs[:14]) / len(navs[:14]) if len(navs) >= 14 else sum(navs) / len(navs)
                 ma_30 = sum(navs) / len(navs)
                 support_30 = min(navs)
+                high_30 = max(navs)
                 
                 # Cantumkan info untuk dipaparkan
                 info_str = f"{tarikh} {masa}"
                 if nota:
                     info_str += f"\n  (Nota: {nota})"
                     
-                return latest_nav, info_str, ma_14, ma_30, support_30
+                return latest_nav, info_str, ma_14, ma_30, support_30, high_30
         except Exception as e:
             logging.error(f"Error baca NAV dari DB: {e}")
-    return None, None, None, None, None
+    return None, None, None, None, None, None
 
 def get_paif_nav_web():
     try:
@@ -141,14 +142,19 @@ async def get_fng():
         klci_text = f"{klci:+.2f}%" if klci is not None else "N/A"
 
         # 3. PAIF NAV (Sistem Analisis Teknikal)
-        nav_db, info_db, ma_14, ma_30, support_30 = get_paif_nav_from_db()
+        nav_db, info_db, ma_14, ma_30, support_30, high_30 = get_paif_nav_from_db()
         
         if nav_db is not None:
+            # Kira Drawdown (Peratusan kejatuhan dari harga puncak)
+            drawdown = ((nav_db - high_30) / high_30) * 100 if high_30 else 0
+            
             paif_text = (
                 f"• Semasa     : *RM {nav_db:.4f}*\n"
                 f"• MA 14-Hari : RM {ma_14:.4f}\n"
                 f"• MA 30-Hari : RM {ma_30:.4f}\n"
                 f"• Support 30D: RM {support_30:.4f}\n"
+                f"• High 30D   : RM {high_30:.4f}\n"
+                f"• Drawdown   : {drawdown:+.2f}%\n"
                 f"  (Kemas kini: {info_db})"
             )
         else:
