@@ -3,6 +3,7 @@ import requests
 import logging
 import threading
 from flask import Flask
+from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -14,7 +15,7 @@ logging.basicConfig(
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Dummy Flask server
+# ==================== Flask (untuk Render) ====================
 app_flask = Flask(__name__)
 
 @app_flask.route("/")
@@ -24,19 +25,14 @@ def home():
 def run_flask():
     app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False, debug=False)
 
+# ==================== Helper Functions ====================
 def get_yahoo_change(symbol):
-    """Ambil % change hari ini dari Yahoo Finance"""
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2d"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         resp = requests.get(url, headers=headers, timeout=10)
         data = resp.json()
-        
-        result = data["chart"]["result"][0]
-        closes = result["indicators"]["quote"][0]["close"]
-        
+        closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
         if len(closes) >= 2 and closes[-1] and closes[-2]:
             change = ((closes[-1] - closes[-2]) / closes[-2]) * 100
             return round(change, 2)
@@ -44,37 +40,71 @@ def get_yahoo_change(symbol):
     except:
         return None
 
-async def get_fng():
+def get_paif_nav():
     try:
-        # 1. Fear & Greed
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/"
+        url = "https://www.publicmutual.com.my/Fund-Price-UT"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         resp = requests.get(url, headers=headers, timeout=15)
-        
+        if resp.status_code != 200:
+            return None, None, None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        rows = soup.find_all("tr")
+
+        for row in rows:
+            text = row.get_text().upper()
+            if "PUBLIC ASIA ITTIKAL FUND" in text or ">PAIF<" in text or " PAIF " in text:
+                cols = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
+                if len(cols) >= 5:
+                    date = cols[0]
+                    nav = cols[4] if len(cols) > 4 else cols[-3]
+                    change = cols[5] if len(cols) > 5 else ""
+                    percent = cols[6] if len(cols) > 6 else ""
+                    return date, nav, f"{change} ({percent})" if percent else change
+        return None, None, None
+    except Exception as e:
+        print(f"PAIF scrape error: {e}")
+        return None, None, None
+
+# ==================== Main F&G Function ====================
+async def get_fng():
+    try:
+        # 1. CNN Fear & Greed
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=15)
+
         if resp.status_code != 200:
             return f"❌ Gagal ambil F&G (kod {resp.status_code})"
-            
+
         data = resp.json()
         fng_data = data.get("fear_and_greed") or {}
-        
+
         if not fng_data:
             historical = data.get("fear_and_greed_historical", [])
             if historical:
                 fng_data = historical[-1]
-        
+
         score = round(fng_data.get("score", 0))
         rating = fng_data.get("rating", "N/A").title()
-        
+
         # 2. Asia Indices
-        hsi = get_yahoo_change("^HSI")      # Hang Seng
-        klci = get_yahoo_change("^KLSE")    # KLCI
-        
+        hsi = get_yahoo_change("^HSI")
+        klci = get_yahoo_change("^KLSE")
+
         hsi_text = f"{hsi:+.2f}%" if hsi is not None else "N/A"
         klci_text = f"{klci:+.2f}%" if klci is not None else "N/A"
-        
-        # 3. Cadangan ringkas
+
+        # 3. PAIF NAV
+        date, nav, change = get_paif_nav()
+        if nav:
+            paif_text = f"• PAIF NAV   : RM {nav}  {change}\n  (Tarikh: {date})"
+        else:
+            paif_text = "• PAIF NAV   : Tidak tersedia buat masa ini"
+
+        # 4. Cadangan
         if score <= 25:
             advice = "Extreme Fear → Pertimbang **beli** PAIF"
         elif score <= 45:
@@ -85,24 +115,26 @@ async def get_fng():
             advice = "Greed → Lebih berhati-hati"
         else:
             advice = "Extreme Greed → Pertimbang kurangkan / switch"
-        
+
         msg = (
             f"🧭 *Fear & Greed*: {score} ({rating})\n\n"
             f"*Asia Market Snapshot:*\n"
             f"• Hang Seng : {hsi_text}\n"
             f"• KLCI      : {klci_text}\n\n"
-            f"*Cadangan PAIF:*\n{advice}"
+            f"*PAIF:*\n{paif_text}\n\n"
+            f"*Cadangan:*\n{advice}"
         )
         return msg
-        
+
     except Exception as e:
         return f"❌ Gagal ambil data.\nError: {str(e)[:120]}"
 
+# ==================== Telegram Commands ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ *PAIF Fear & Greed Bot Aktif!*\n\n"
-        "/fng - Fear & Greed + Asia Snapshot\n"
-        "/paif - Info PAIF",
+        "/fng  - Fear & Greed + Asia + PAIF NAV\n"
+        "/paif - Info ringkas PAIF",
         parse_mode="Markdown"
     )
 
@@ -119,6 +151,7 @@ async def paif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ==================== Main ====================
 def main():
     if not TOKEN:
         print("ERROR: TELEGRAM_TOKEN tidak dijumpai!")
