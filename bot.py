@@ -2,6 +2,7 @@ import os
 import requests
 import logging
 import threading
+from datetime import datetime, timedelta
 from flask import Flask
 from bs4 import BeautifulSoup
 from telegram import Update
@@ -54,7 +55,31 @@ def get_yahoo_change(symbol):
     except:
         return None
 
-def get_paif_nav():
+# Ambil NAV dari Supabase (Versi Log Sejarah)
+def get_paif_nav_from_db():
+    if supabase:
+        try:
+            # Ambil rekod paling terbaharu berdasarkan 'created_at'
+            res = supabase.table("paif_nav").select("*").order("created_at", desc=True).limit(1).execute()
+            
+            if res.data:
+                nav = res.data[0].get("nav")
+                tarikh = res.data[0].get("tarikh")
+                masa = res.data[0].get("masa")
+                nota = res.data[0].get("nota")
+                
+                # Cantumkan info untuk dipaparkan
+                info_str = f"{tarikh} {masa}"
+                if nota:
+                    info_str += f"\n  (Nota: {nota})"
+                    
+                return f"{nav:.4f}", info_str
+        except Exception as e:
+            logging.error(f"Error baca NAV dari DB: {e}")
+    return None, None
+
+# Backup: Ambil dari Web (Jika DB tiada data)
+def get_paif_nav_web():
     try:
         url = "https://www.investing.com/funds/public-asia-ittikal-fund"
         headers = {
@@ -66,7 +91,6 @@ def get_paif_nav():
             return None, None, None
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        
         price_tag = soup.select_one('[data-test="instrument-price-last"]')
         change_tag = soup.select_one('[data-test="instrument-price-change"]')
         percent_tag = soup.select_one('[data-test="instrument-price-change-percent"]')
@@ -79,9 +103,8 @@ def get_paif_nav():
             return "Investing.com", nav, f"{change} {percent}".strip()
         
         return None, None, None
-        
     except Exception as e:
-        print(f"PAIF Investing.com error: {e}")
+        print(f"PAIF Web error: {e}")
         return None, None, None
 
 # ==================== Main F&G Function ====================
@@ -113,12 +136,17 @@ async def get_fng():
         hsi_text = f"{hsi:+.2f}%" if hsi is not None else "N/A"
         klci_text = f"{klci:+.2f}%" if klci is not None else "N/A"
 
-        # 3. PAIF NAV
-        date, nav, change = get_paif_nav()
-        if nav:
-            paif_text = f"• PAIF NAV   : RM {nav}  {change}\n  (Tarikh: {date})"
+        # 3. PAIF NAV (Sistem Hibrid - DB diutamakan)
+        nav_db, info_db = get_paif_nav_from_db()
+        if nav_db:
+             paif_text = f"• PAIF NAV   : RM {nav_db}\n  (Dikemas kini: {info_db})"
         else:
-            paif_text = "• PAIF NAV   : Tidak tersedia buat masa ini"
+            # Guna Web Scraper sebagai sandaran jika DB kosong
+            date_web, nav_web, change_web = get_paif_nav_web()
+            if nav_web:
+                paif_text = f"• PAIF NAV   : RM {nav_web}  {change_web}\n  (Sumber Auto: {date_web})"
+            else:
+                paif_text = "• PAIF NAV   : Tidak tersedia buat masa ini"
 
         # 4. Cadangan
         if score <= 25:
@@ -149,7 +177,6 @@ async def get_fng():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # Rekod pengguna ke pangkalan data Supabase
     if supabase:
         try:
             user_data = {
@@ -157,17 +184,67 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "first_name": user.first_name or "",
                 "username": user.username or ""
             }
-            # upsert bermaksud: jika ID sudah ada, update. Jika belum, tambah rekod baharu.
+            # Jika table 'users' tiada, kod ini diabaikan dengan selamat
             supabase.table("users").upsert(user_data).execute()
-        except Exception as e:
-            logging.error(f"Gagal simpan data user ke Supabase: {e}")
+        except Exception:
+            pass
 
     await update.message.reply_text(
         "✅ *PAIF Fear & Greed Bot Aktif!*\n\n"
-        "/fng  - Fear & Greed + Asia + PAIF NAV\n"
+        "/fng  - Lihat bacaan semasa F&G\n"
+        "/setnav [harga] [nota opsional] - Update NAV manual\n"
         "/paif - Info ringkas PAIF",
         parse_mode="Markdown"
     )
+
+# Fungsi kemas kini selari dengan schema 'paif_nav' anda
+async def setnav_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Sila masukkan harga NAV.\n*Contoh:* `/setnav 0.3541` atau `/setnav 0.3541 HSI jatuh hari ini`", 
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        new_nav = float(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Sila pastikan NAV adalah dalam format nombor/perpuluhan.")
+        return
+        
+    # Ambil teks selepas harga sebagai nota (jika ada)
+    nota_str = " ".join(context.args[1:]) if len(context.args) > 1 else ""
+    
+    # Kira Waktu Malaysia (UTC + 8 jam)
+    my_time = datetime.utcnow() + timedelta(hours=8)
+    tarikh_str = my_time.strftime("%d-%m-%Y")
+    masa_str = my_time.strftime("%I:%M %p")
+
+    if supabase:
+        try:
+            # Insert data baharu sebagai log (id dan created_at diuruskan oleh Supabase)
+            data = {
+                "tarikh": tarikh_str,
+                "masa": masa_str,
+                "nav": new_nav,
+                "nota": nota_str
+            }
+            supabase.table("paif_nav").insert(data).execute()
+            
+            # Balasan berserta nota (jika ada)
+            reply_msg = (
+                f"✅ *NAV PAIF Berjaya Disimpan!*\n\n"
+                f"• Harga: RM {new_nav:.4f}\n"
+                f"• Tarikh: {tarikh_str} ({masa_str})"
+            )
+            if nota_str:
+                reply_msg += f"\n• Nota: {nota_str}"
+                
+            await update.message.reply_text(reply_msg, parse_mode="Markdown")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Gagal simpan ke database: {e}")
+    else:
+        await update.message.reply_text("❌ Database belum disambungkan.")
 
 async def fng_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await get_fng()
@@ -177,8 +254,8 @@ async def paif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📊 *Public Asia Ittikal Fund (PAIF)*\n\n"
         "• Fund Shariah-compliant Asia Equity\n"
-        "• Prestasi 1 tahun lepas sangat kukuh\n"
-        "• Gunakan /fng untuk timing sentiment",
+        "• Gunakan /fng untuk timing sentiment\n"
+        "• Gunakan /setnav untuk kemas kini harga",
         parse_mode="Markdown"
     )
 
@@ -191,9 +268,11 @@ def main():
     threading.Thread(target=run_flask, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("fng", fng_cmd))
     app.add_handler(CommandHandler("paif", paif_cmd))
+    app.add_handler(CommandHandler("setnav", setnav_cmd))
 
     print("Bot sedang berjalan...")
     app.run_polling(drop_pending_updates=True)
