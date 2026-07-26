@@ -14,7 +14,7 @@ logging.basicConfig(
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Dummy Flask server supaya Render happy
+# Dummy Flask server
 app_flask = Flask(__name__)
 
 @app_flask.route("/")
@@ -22,43 +22,78 @@ def home():
     return "PAIF Fear & Greed Bot is running!"
 
 def run_flask():
-    # Ditambah use_reloader=False supaya Flask tidak crash dalam thread
     app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False, debug=False)
+
+def get_yahoo_change(symbol):
+    """Ambil % change hari ini dari Yahoo Finance"""
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2d"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        data = resp.json()
+        
+        result = data["chart"]["result"][0]
+        closes = result["indicators"]["quote"][0]["close"]
+        
+        if len(closes) >= 2 and closes[-1] and closes[-2]:
+            change = ((closes[-1] - closes[-2]) / closes[-2]) * 100
+            return round(change, 2)
+        return None
+    except:
+        return None
 
 async def get_fng():
     try:
+        # 1. Fear & Greed
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/"
-        
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
-        
         resp = requests.get(url, headers=headers, timeout=15)
         
         if resp.status_code != 200:
-            return f"❌ Server CNN balas kod: {resp.status_code}"
+            return f"❌ Gagal ambil F&G (kod {resp.status_code})"
             
         data = resp.json()
+        fng_data = data.get("fear_and_greed") or {}
         
-        # Cuba beberapa kemungkinan struktur data CNN
-        fng_data = data.get("fear_and_greed") or data.get("fearAndGreed")
+        if not fng_data:
+            historical = data.get("fear_and_greed_historical", [])
+            if historical:
+                fng_data = historical[-1]
         
-        if fng_data:
-            score = round(fng_data.get("score", 0))
-            rating = fng_data.get("rating", "N/A").title()
-            return f"🧭 *Fear & Greed*: {score} ({rating})"
+        score = round(fng_data.get("score", 0))
+        rating = fng_data.get("rating", "N/A").title()
         
-        # Fallback: ambil dari historical (cara lama)
-        historical = data.get("fear_and_greed_historical") or data.get("fearAndGreedHistorical")
-        if historical and len(historical) > 0:
-            latest = historical[-1]
-            score = round(latest.get("score", 0))
-            rating = latest.get("rating", "N/A").title()
-            return f"🧭 *Fear & Greed*: {score} ({rating})"
+        # 2. Asia Indices
+        hsi = get_yahoo_change("^HSI")      # Hang Seng
+        klci = get_yahoo_change("^KLSE")    # KLCI
         
-        # Jika masih gagal, tunjuk sebahagian data untuk debug
-        return f"❌ Struktur data tidak dikenali.\nKeys: {list(data.keys())[:5]}"
+        hsi_text = f"{hsi:+.2f}%" if hsi is not None else "N/A"
+        klci_text = f"{klci:+.2f}%" if klci is not None else "N/A"
+        
+        # 3. Cadangan ringkas
+        if score <= 25:
+            advice = "Extreme Fear → Pertimbang **beli** PAIF"
+        elif score <= 45:
+            advice = "Fear → Boleh beli secara berperingkat"
+        elif score <= 55:
+            advice = "Neutral → Hold / pantau"
+        elif score <= 75:
+            advice = "Greed → Lebih berhati-hati"
+        else:
+            advice = "Extreme Greed → Pertimbang kurangkan / switch"
+        
+        msg = (
+            f"🧭 *Fear & Greed*: {score} ({rating})\n\n"
+            f"*Asia Market Snapshot:*\n"
+            f"• Hang Seng : {hsi_text}\n"
+            f"• KLCI      : {klci_text}\n\n"
+            f"*Cadangan PAIF:*\n{advice}"
+        )
+        return msg
         
     except Exception as e:
         return f"❌ Gagal ambil data.\nError: {str(e)[:120]}"
@@ -66,7 +101,7 @@ async def get_fng():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ *PAIF Fear & Greed Bot Aktif!*\n\n"
-        "/fng - Lihat Fear & Greed Index\n"
+        "/fng - Fear & Greed + Asia Snapshot\n"
         "/paif - Info PAIF",
         parse_mode="Markdown"
     )
@@ -78,8 +113,9 @@ async def fng_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def paif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📊 *Public Asia Ittikal Fund (PAIF)*\n\n"
-        "Fund Shariah-compliant Asia Equity.\n"
-        "Gunakan /fng untuk timing sentiment.",
+        "• Fund Shariah-compliant Asia Equity\n"
+        "• Prestasi 1 tahun lepas sangat kukuh\n"
+        "• Gunakan /fng untuk timing sentiment",
         parse_mode="Markdown"
     )
 
@@ -88,7 +124,6 @@ def main():
         print("ERROR: TELEGRAM_TOKEN tidak dijumpai!")
         return
 
-    # Jalankan Flask di thread berasingan
     threading.Thread(target=run_flask, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
